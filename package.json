@@ -1,0 +1,20 @@
+{
+  "name": "tagventory-backend",
+  "version": "1.0.0",
+  "description": "Backend mínimo con MongoDB Atlas y OpenAI",
+  "main": "src/index.js",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "mongodb": "^6.3.0",
+    "openai": "^4.20.1"
+  }
+}

@@ -70,6 +70,8 @@ export async function postSearchAssets(req, res) {
           model: 1,
           locationPath: 1,
           serial: 1,
+          EPC: 1,
+          fileExt: 1,
           score: { $meta: 'vectorSearchScore' },
         },
       },

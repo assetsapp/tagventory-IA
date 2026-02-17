@@ -51,6 +51,7 @@ export async function postReconciliationSuggestions(req, res) {
           name: 1,
           brand: 1,
           model: 1,
+          fileExt: 1,
           score: { $meta: 'vectorSearchScore' },
         },
       },

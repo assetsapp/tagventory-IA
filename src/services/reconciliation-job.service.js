@@ -86,6 +86,7 @@ export async function processJob(jobId) {
             model: 1,
             EPC: 1,
             locationPath: 1,
+            fileExt: 1,
             score: { $meta: 'vectorSearchScore' },
           },
         },
@@ -98,6 +99,7 @@ export async function processJob(jobId) {
         model: s.model || '',
         EPC: s.EPC || '',
         locationPath: s.locationPath || '',
+        fileExt: s.fileExt || '',
         score: s.score,
       }));
 

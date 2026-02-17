@@ -102,21 +102,189 @@ curl -X POST http://localhost:3000/ai/embedding \
 }
 ```
 
+### POST /ai/assets/backfill-sample
+
+Genera embeddings para activos que aún no los tienen. Usa solo `name + brand + model`.
+
+**Ejemplo con curl:**
+
+```bash
+curl -X POST http://localhost:3000/ai/assets/backfill-sample \
+  -H "Content-Type: application/json" \
+  -d '{"limit": 20}'
+```
+
+**Respuesta exitosa (200):**
+
+```json
+{ "updated": 15 }
+```
+
+### POST /ai/search/assets
+
+Búsqueda semántica general de activos por texto libre.
+
+**Ejemplo con curl:**
+
+```bash
+curl -X POST http://localhost:3000/ai/search/assets \
+  -H "Content-Type: application/json" \
+  -d '{"query": "laptop Dell", "limit": 5}'
+```
+
+**Respuesta exitosa (200):**
+
+```json
+{
+  "results": [
+    { "_id": "...", "name": "...", "brand": "...", "model": "...", "locationPath": "...", "serial": "...", "score": 0.85 }
+  ]
+}
+```
+
+### POST /ai/reconciliation/suggestions
+
+**MVP de conciliación con IA.** Compara una descripción SAP (texto libre) contra los activos de Tagventory usando embeddings y vector search sobre `name + brand + model`.
+
+**Ejemplo con curl:**
+
+```bash
+curl -X POST http://localhost:3000/ai/reconciliation/suggestions \
+  -H "Content-Type: application/json" \
+  -d '{"sapDescription": "tanque diesel 2000 litros", "limit": 5}'
+```
+
+**Respuesta exitosa (200):**
+
+```json
+{
+  "query": "tanque diesel 2000 litros",
+  "results": [
+    { "_id": "...", "name": "Tanque Diesel", "brand": "Acme", "model": "TD-2000", "score": 0.87 },
+    { "_id": "...", "name": "Tanque Combustible", "brand": "Acme", "model": "TC-2000", "score": 0.72 }
+  ]
+}
+```
+
+**Respuesta error validación (400):**
+
+```json
+{
+  "status": "error",
+  "message": "El campo \"sapDescription\" es requerido y no puede estar vacío"
+}
+```
+
+### POST /ai/reconciliation/job
+
+Crea un job de conciliación por lote. Recibe las filas SAP y las persiste sin generar embeddings aún.
+
+**Ejemplo con curl:**
+
+```bash
+curl -X POST http://localhost:3000/ai/reconciliation/job \
+  -H "Content-Type: application/json" \
+  -d '{
+    "rows": [
+      { "rowNumber": 1, "sapDescription": "IMP LASER HP LJ4000N", "sapLocation": "Mitikah Piso 2" },
+      { "rowNumber": 2, "sapDescription": "MONITOR DELL 24 PULGADAS", "sapLocation": "Mitikah Piso 3" }
+    ]
+  }'
+```
+
+**Respuesta (200):**
+
+```json
+{ "jobId": "664a...", "totalRows": 2 }
+```
+
+### POST /ai/reconciliation/job/:jobId/process
+
+Procesa un job: genera embeddings y ejecuta vector search para cada fila (en serie).
+
+**Ejemplo con curl:**
+
+```bash
+curl -X POST http://localhost:3000/ai/reconciliation/job/664a.../process
+```
+
+**Respuesta (200):**
+
+```json
+{ "status": "completed", "processedRows": 2 }
+```
+
+### GET /ai/reconciliation/job/:jobId
+
+Obtiene resultados paginados de un job.
+
+**Ejemplo con curl:**
+
+```bash
+curl "http://localhost:3000/ai/reconciliation/job/664a...?offset=0&limit=20"
+```
+
+**Respuesta (200):**
+
+```json
+{
+  "jobId": "664a...",
+  "status": "completed",
+  "totalRows": 2,
+  "processedRows": 2,
+  "rows": [
+    {
+      "rowNumber": 1,
+      "sapDescription": "IMP LASER HP LJ4000N",
+      "sapLocation": "Mitikah Piso 2",
+      "suggestions": [
+        { "assetId": "...", "name": "Impresora HP", "brand": "HP", "model": "LJ4000N", "EPC": "...", "locationPath": "...", "score": 0.91 }
+      ],
+      "decision": "pending",
+      "selectedAssetId": null
+    }
+  ]
+}
+```
+
+### POST /ai/reconciliation/job/:jobId/decision
+
+Guarda la decisión del usuario sobre una fila del job.
+
+**Ejemplo con curl:**
+
+```bash
+curl -X POST http://localhost:3000/ai/reconciliation/job/664a.../decision \
+  -H "Content-Type: application/json" \
+  -d '{ "rowNumber": 1, "decision": "match", "selectedAssetId": "665b..." }'
+```
+
+**Respuesta (200):**
+
+```json
+{ "success": true }
+```
+
 ## Estructura del proyecto
 
 ```
 src/
 ├── config/
-│   ├── env.js       # Carga y validación de variables de entorno
-│   ├── mongo.js     # Conexión MongoDB
-│   └── openai.js    # Cliente OpenAI
+│   ├── env.js          # Carga y validación de variables de entorno
+│   ├── mongo.js        # Conexión MongoDB
+│   └── openai.js       # Cliente OpenAI
 ├── controllers/
 │   ├── health.controller.js
-│   └── ai.controller.js
+│   ├── ai.controller.js
+│   └── reconciliation.controller.js
 ├── routes/
 │   ├── health.routes.js
 │   └── ai.routes.js
 ├── services/
-│   └── embedding.service.js
+│   ├── embedding.service.js
+│   ├── backfill.service.js
+│   └── reconciliation-job.service.js
+├── utils/
+│   └── embedding-text.js   # buildAssetEmbeddingText, normalizeText
 └── index.js
 ```

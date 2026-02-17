@@ -1,16 +1,8 @@
 import { getDb } from '../config/mongo.js';
 import { getTextEmbedding } from './embedding.service.js';
+import { buildAssetEmbeddingText } from '../utils/embedding-text.js';
 
 const ASSETS_COLLECTION = 'assets';
-const FIELDS_FOR_EMBEDDING = ['name', 'brand', 'model', 'locationPath', 'serial', 'notes'];
-
-function buildEmbeddingText(asset) {
-  const parts = FIELDS_FOR_EMBEDDING
-    .map((field) => asset[field])
-    .filter((val) => val != null && String(val).trim() !== '');
-
-  return parts.join(' ').trim();
-}
 
 export async function backfillSampleAssets(limit = 20) {
   const db = getDb();
@@ -27,7 +19,7 @@ export async function backfillSampleAssets(limit = 20) {
   let updated = 0;
 
   for (const asset of assets) {
-    const embeddingText = buildEmbeddingText(asset);
+    const embeddingText = buildAssetEmbeddingText(asset);
 
     if (!embeddingText) {
       continue;

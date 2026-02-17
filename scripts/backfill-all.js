@@ -49,9 +49,41 @@ if (!MONGO_URI || !DB_NAME || !OPENAI_API_KEY) {
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
+
+function isMeaningfulValue(v) {
+  if (!v) return false;
+  const s = String(v).trim().toLowerCase();
+  if (!s) return false;
+
+  // Common placeholders in inventories
+  const placeholders = new Set([
+    's/m', 's\\m', 's.m',
+    's/n', 's\\n', 's.n',
+    'na', 'n/a', 'n.a.',
+    'sin marca', 'sin modelo',
+    'no aplica', 'no aplica.',
+    'no aplica a',
+    'sin dato', 'sd',
+    '-', '--', '---',
+    'x',
+  ]);
+  if (placeholders.has(s)) return false;
+
+  // Also treat short variants like "s m" / "s n" as placeholders
+  const compact = s.replace(/\s+/g, '');
+  if (compact === 's/m' || compact === 's/n' || compact === 'sm' || compact === 'sn') return false;
+
+  return true;
+}
+
 function buildEmbeddingText(asset) {
-  const raw = [asset.name || '', asset.brand || '', asset.model || ''].join(' ');
-  return raw.replace(/\s+/g, ' ').trim();
+  const parts = [];
+
+  if (isMeaningfulValue(asset.name)) parts.push(String(asset.name).trim());
+  if (isMeaningfulValue(asset.brand)) parts.push(String(asset.brand).trim());
+  if (isMeaningfulValue(asset.model)) parts.push(String(asset.model).trim());
+
+  return parts.join(' ').replace(/\s+/g, ' ').trim();
 }
 
 function sleep(ms) {
@@ -142,13 +174,13 @@ async function main() {
 
       console.log(`\n── Batch ${batchNumber} (${assets.length} assets) ──`);
 
-      // Build texts for embedding (only for assets with non-empty name/brand/model string)
+      // Build texts for embedding (only for assets with non-empty name string)
       const toEmbed = [];
       const toSkip = [];
 
       for (const asset of assets) {
         const embeddingText = buildEmbeddingText(asset);
-        if (!embeddingText) {
+        if (!isMeaningfulValue(asset.name)) {
           toSkip.push(asset);
         } else {
           toEmbed.push({ _id: asset._id, embeddingText });
@@ -162,7 +194,7 @@ async function main() {
             filter: { _id: a._id, textEmbedding: { $exists: false } },
             update: {
               $set: {
-                embeddingSkipReason: 'missing_name_brand_model',
+                embeddingSkipReason: 'missing_name',
                 embeddingVersion: 1,
                 embeddingUpdatedAt: new Date(),
               },
@@ -240,7 +272,7 @@ async function main() {
     console.log(`  Completado en ${formatTime(elapsed)}`);
     console.log(`  Procesados: ${processed}`);
     console.log(`  Errores:    ${errors}`);
-    console.log(`  Omitidos:   ${skipped} (sin name/brand/model; marcados con embeddingSkipReason)`);
+    console.log(`  Omitidos:   ${skipped} (sin name; marcados con embeddingSkipReason)`);
     console.log('════════════════════════════════════════');
   } catch (err) {
     console.error('[Fatal]', err.message);

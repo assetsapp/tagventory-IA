@@ -1,4 +1,5 @@
 import express from 'express';
+import cors from 'cors';
 import { connectMongo } from './config/mongo.js';
 import { env } from './config/env.js';
 import healthRoutes from './routes/health.routes.js';
@@ -6,6 +7,7 @@ import aiRoutes from './routes/ai.routes.js';
 
 const app = express();
 
+app.use(cors());
 app.use(express.json());
 
 app.use('/health', healthRoutes);

@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb';
 import { getDb } from '../config/mongo.js';
 import { getTextEmbedding } from './embedding.service.js';
 import { normalizeText } from '../utils/embedding-text.js';
+import { buildLocationMatch } from '../utils/location-filter.js';
 
 const COLLECTION = 'reconciliation_jobs';
 const ASSETS_COLLECTION = 'assets';
@@ -10,8 +11,10 @@ const VECTOR_INDEX = 'assets_text_embedding_index';
 /**
  * Crea un job de conciliación con las filas SAP recibidas.
  * No genera embeddings aún, solo persiste el job en estado "pending".
+ * @param {Array} rows - Filas SAP
+ * @param {string} [locationFilter] - Ubicación opcional para filtrar coincidencias (padre e hijos)
  */
-export async function createJob(rows) {
+export async function createJob(rows, locationFilter = null) {
   const db = getDb();
   if (!db) throw new Error('MongoDB no conectado');
 
@@ -28,6 +31,7 @@ export async function createJob(rows) {
     status: 'pending',
     totalRows: jobRows.length,
     processedRows: 0,
+    locationFilter: locationFilter && String(locationFilter).trim() ? String(locationFilter).trim() : null,
     createdAt: new Date(),
     updatedAt: new Date(),
     rows: jobRows,
@@ -67,29 +71,35 @@ export async function processJob(jobId) {
 
       const { embedding } = await getTextEmbedding(normalizedDesc);
 
-      const suggestions = await db.collection(ASSETS_COLLECTION).aggregate([
+      const locationMatch = job.locationFilter ? buildLocationMatch(job.locationFilter) : null;
+      const pipeline = [
         {
           $vectorSearch: {
             index: VECTOR_INDEX,
             path: 'textEmbedding',
             queryVector: embedding,
-            numCandidates: 100,
-            limit: 5,
+            numCandidates: locationMatch ? 200 : 100,
+            limit: locationMatch ? 50 : 5,
           },
         },
-        {
-          $project: {
-            _id: 1,
-            name: 1,
-            brand: 1,
-            model: 1,
-            EPC: 1,
-            locationPath: 1,
-            fileExt: 1,
-            score: { $meta: 'vectorSearchScore' },
-          },
+      ];
+      if (locationMatch) {
+        pipeline.push({ $match: locationMatch }, { $limit: 5 });
+      }
+      pipeline.push({
+        $project: {
+          _id: 1,
+          name: 1,
+          brand: 1,
+          model: 1,
+          EPC: 1,
+          locationPath: 1,
+          fileExt: 1,
+          score: { $meta: 'vectorSearchScore' },
         },
-      ]).toArray();
+      });
+
+      const suggestions = await db.collection(ASSETS_COLLECTION).aggregate(pipeline).toArray();
 
       const formattedSuggestions = suggestions.map((s) => ({
         assetId: s._id,
@@ -144,6 +154,7 @@ export async function getJobResults(jobId, offset = 0, limit = 20) {
         status: 1,
         totalRows: 1,
         processedRows: 1,
+        locationFilter: 1,
         createdAt: 1,
         updatedAt: 1,
         rows: { $slice: [offset, limit] },
@@ -167,6 +178,7 @@ export async function getJobResults(jobId, offset = 0, limit = 20) {
     status: job.status,
     totalRows: job.totalRows,
     processedRows: job.processedRows,
+    locationFilter: job.locationFilter ?? null,
     rows,
   };
 }

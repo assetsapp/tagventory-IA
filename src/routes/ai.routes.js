@@ -8,6 +8,7 @@ import {
   getJob,
   postDecision,
 } from '../controllers/reconciliation.controller.js';
+import { getLocations } from '../controllers/locations.controller.js';
 import { postUploadExcel } from '../controllers/uploadFile.controller.js';
 
 const router = Router();
@@ -16,6 +17,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 router.post('/embedding', postEmbedding);
 router.post('/assets/backfill-sample', postBackfillSample);
 router.post('/search/assets', postSearchAssets);
+router.get('/locations', getLocations);
 
 // Conciliación
 router.post('/reconciliation/suggestions', postReconciliationSuggestions);

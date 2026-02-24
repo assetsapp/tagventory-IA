@@ -1,5 +1,6 @@
 import { getTextEmbedding } from '../services/embedding.service.js';
 import { normalizeText } from '../utils/embedding-text.js';
+import { buildLocationMatch } from '../utils/location-filter.js';
 import { getDb } from '../config/mongo.js';
 import {
   createJob,
@@ -14,11 +15,11 @@ import {
  * MVP de conciliación con IA:
  * Compara la descripción SAP (texto libre) contra los activos de Tagventory
  * usando únicamente (name + brand + model) mediante embeddings y vector search.
- * Sin filtros por ubicación, categoría ni reglas adicionales.
+ * Acepta filtro opcional por ubicación (locationFilter): solo devuelve activos en esa ubicación o hijas.
  */
 export async function postReconciliationSuggestions(req, res) {
   try {
-    const { sapDescription, limit } = req.body;
+    const { sapDescription, limit, locationFilter } = req.body;
 
     if (!sapDescription || typeof sapDescription !== 'string' || sapDescription.trim() === '') {
       return res.status(400).json({
@@ -34,28 +35,34 @@ export async function postReconciliationSuggestions(req, res) {
     if (!db) throw new Error('MongoDB no conectado');
 
     const searchLimit = Math.max(1, Math.min(50, Number(limit) || 5));
+    const locationMatch = buildLocationMatch(locationFilter);
 
-    const results = await db.collection('assets').aggregate([
+    const pipeline = [
       {
         $vectorSearch: {
           index: 'assets_text_embedding_index',
           path: 'textEmbedding',
           queryVector: embedding,
-          numCandidates: 200,
-          limit: searchLimit,
+          numCandidates: locationMatch ? 400 : 200,
+          limit: locationMatch ? Math.min(100, searchLimit * 10) : searchLimit,
         },
       },
-      {
-        $project: {
-          _id: 1,
-          name: 1,
-          brand: 1,
-          model: 1,
-          fileExt: 1,
-          score: { $meta: 'vectorSearchScore' },
-        },
+    ];
+    if (locationMatch) {
+      pipeline.push({ $match: locationMatch }, { $limit: searchLimit });
+    }
+    pipeline.push({
+      $project: {
+        _id: 1,
+        name: 1,
+        brand: 1,
+        model: 1,
+        fileExt: 1,
+        score: { $meta: 'vectorSearchScore' },
       },
-    ]).toArray();
+    });
+
+    const results = await db.collection('assets').aggregate(pipeline).toArray();
 
     res.json({
       query: normalizedQuery,
@@ -83,7 +90,7 @@ export async function postReconciliationSuggestions(req, res) {
  */
 export async function postCreateJob(req, res) {
   try {
-    const { rows } = req.body;
+    const { rows, locationFilter } = req.body;
 
     if (!Array.isArray(rows) || rows.length === 0) {
       return res.status(400).json({
@@ -92,7 +99,11 @@ export async function postCreateJob(req, res) {
       });
     }
 
-    const { jobId, totalRows } = await createJob(rows);
+    const filter =
+      locationFilter != null && String(locationFilter).trim() !== ''
+        ? String(locationFilter).trim()
+        : null;
+    const { jobId, totalRows } = await createJob(rows, filter);
     res.json({ jobId, totalRows });
   } catch (err) {
     console.error('[reconciliation/job:create]', err.message);

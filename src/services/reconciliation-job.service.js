@@ -19,7 +19,6 @@ export async function createJob(rows) {
     rowNumber: r.rowNumber,
     sapDescription: r.sapDescription || '',
     sapLocation: r.sapLocation || '',
-    embedding: null,
     suggestions: [],
     decision: 'pending',
     selectedAssetId: null,
@@ -103,11 +102,11 @@ export async function processJob(jobId) {
         score: s.score,
       }));
 
+      // No guardamos el embedding (evita superar límite 16MB de MongoDB)
       await collection.updateOne(
         { _id: objectId },
         {
           $set: {
-            [`rows.${i}.embedding`]: embedding,
             [`rows.${i}.suggestions`]: formattedSuggestions,
             processedRows: processedRows + 1,
             updatedAt: new Date(),

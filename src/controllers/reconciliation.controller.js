@@ -106,20 +106,22 @@ export async function postCreateJob(req, res) {
 /**
  * POST /ai/reconciliation/job/:jobId/process
  *
- * Procesa un job existente: genera embeddings y ejecuta vector search
- * para cada fila, en serie (una por una).
+ * Inicia el procesamiento del job en segundo plano y retorna de inmediato.
+ * El frontend debe hacer polling a GET /job/:jobId para ver progreso (processedRows/totalRows).
  */
 export async function postProcessJob(req, res) {
   try {
     const { jobId } = req.params;
-    const result = await processJob(jobId);
-    res.json(result);
+    processJob(jobId).catch((err) => {
+      console.error('[reconciliation/job:process]', err.message);
+    });
+    res.json({ status: 'processing', jobId, message: 'Análisis iniciado. Consulta el estado con GET /job/:jobId' });
   } catch (err) {
     console.error('[reconciliation/job:process]', err.message);
     const status = err.message.includes('no encontrado') ? 404 : 500;
     res.status(status).json({
       status: 'error',
-      message: err.message || 'Error al procesar el job de conciliación',
+      message: err.message || 'Error al iniciar el procesamiento del job',
     });
   }
 }
@@ -134,7 +136,7 @@ export async function getJob(req, res) {
   try {
     const { jobId } = req.params;
     const offset = Math.max(0, Number(req.query.offset) || 0);
-    const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 20));
+    const limit = Math.max(1, Math.min(2000, Number(req.query.limit) || 20));
 
     const result = await getJobResults(jobId, offset, limit);
     res.json(result);

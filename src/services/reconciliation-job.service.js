@@ -277,15 +277,21 @@ export async function saveDecision(jobId, rowNumber, decision, selectedAssetId) 
   const objectId = new ObjectId(jobId);
   const collection = db.collection(COLLECTION);
 
+  const update = {
+    'rows.$.decision': decision,
+    'rows.$.selectedAssetId': selectedAssetId ? new ObjectId(selectedAssetId) : null,
+    updatedAt: new Date(),
+  };
+
+  // Si el usuario marca "no_match", limpiamos también las sugerencias de esa fila
+  // para que no vuelvan a mostrarse en vistas posteriores (conciliación/reportes).
+  if (decision === 'no_match') {
+    update['rows.$.suggestions'] = [];
+  }
+
   const result = await collection.updateOne(
     { _id: objectId, 'rows.rowNumber': rowNumber },
-    {
-      $set: {
-        'rows.$.decision': decision,
-        'rows.$.selectedAssetId': selectedAssetId ? new ObjectId(selectedAssetId) : null,
-        updatedAt: new Date(),
-      },
-    }
+    { $set: update }
   );
 
   if (result.matchedCount === 0) {

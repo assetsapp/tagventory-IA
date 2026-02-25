@@ -7,7 +7,10 @@ import {
   processJob,
   getJobResults,
   saveDecision,
+  listJobs,
+  getJobAllRows,
 } from '../services/reconciliation-job.service.js';
+import { buildJobReportExcel } from '../services/report-export.service.js';
 
 /**
  * POST /ai/reconciliation/suggestions
@@ -202,6 +205,62 @@ export async function postDecision(req, res) {
     res.status(status).json({
       status: 'error',
       message: err.message || 'Error al guardar decisión',
+    });
+  }
+}
+
+// ──────────────────────────────────────────────
+// Reportes (listado y export Excel)
+// ──────────────────────────────────────────────
+
+/**
+ * GET /ai/reconciliation/jobs
+ *
+ * Lista jobs con filtro opcional por fechas.
+ * Query: from (ISO date), to (ISO date).
+ */
+export async function getJobsList(req, res) {
+  try {
+    const from = req.query.from ? new Date(req.query.from) : null;
+    const to = req.query.to ? new Date(req.query.to) : null;
+    if (from && isNaN(from.getTime())) {
+      return res.status(400).json({ status: 'error', message: 'Parámetro "from" debe ser una fecha válida' });
+    }
+    if (to && isNaN(to.getTime())) {
+      return res.status(400).json({ status: 'error', message: 'Parámetro "to" debe ser una fecha válida' });
+    }
+    const jobs = await listJobs(from, to);
+    res.json({ jobs });
+  } catch (err) {
+    console.error('[reconciliation/jobs:list]', err.message);
+    res.status(500).json({
+      status: 'error',
+      message: 'Error al listar jobs',
+    });
+  }
+}
+
+/**
+ * GET /ai/reconciliation/job/:jobId/export
+ *
+ * Descarga el reporte del job en Excel.
+ * Columnas: Fila, Descripción SAP, Ubicación SAP, Estado (Match/Not found), Nombre, Marca, Modelo, EPC, Ubicación Tagventory.
+ */
+export async function getJobExport(req, res) {
+  try {
+    const { jobId } = req.params;
+    const job = await getJobAllRows(jobId);
+    const buffer = buildJobReportExcel(job);
+    const filename = `reporte-conciliacion-${jobId}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (err) {
+    console.error('[reconciliation/job:export]', err.message);
+    const status = err.message.includes('no encontrado') ? 404 : 500;
+    res.status(status).json({
+      status: 'error',
+      message: err.message || 'Error al exportar reporte',
     });
   }
 }

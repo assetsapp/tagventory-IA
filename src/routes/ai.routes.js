@@ -7,6 +7,8 @@ import {
   postProcessJob,
   getJob,
   postDecision,
+  getJobsList,
+  getJobExport,
 } from '../controllers/reconciliation.controller.js';
 import { getLocations } from '../controllers/locations.controller.js';
 import { postUploadExcel } from '../controllers/uploadFile.controller.js';
@@ -25,6 +27,8 @@ router.post('/reconciliation/job', postCreateJob);
 router.post('/reconciliation/job/:jobId/process', postProcessJob);
 router.get('/reconciliation/job/:jobId', getJob);
 router.post('/reconciliation/job/:jobId/decision', postDecision);
+router.get('/reconciliation/jobs', getJobsList);
+router.get('/reconciliation/job/:jobId/export', getJobExport);
 
 // files
 router.post('/files/upload/excel', upload.single('file'), postUploadExcel);

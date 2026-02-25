@@ -184,6 +184,90 @@ export async function getJobResults(jobId, offset = 0, limit = 20) {
 }
 
 /**
+ * Lista jobs por rango de fechas (por createdAt).
+ * @param {Date} [fromDate] - Inicio (inclusive)
+ * @param {Date} [toDate] - Fin (inclusive); se considera hasta end of day
+ */
+export async function listJobs(fromDate = null, toDate = null) {
+  const db = getDb();
+  if (!db) throw new Error('MongoDB no conectado');
+
+  const filter = {};
+  if (fromDate) {
+    filter.createdAt = filter.createdAt || {};
+    filter.createdAt.$gte = new Date(fromDate);
+  }
+  if (toDate) {
+    const end = new Date(toDate);
+    end.setHours(23, 59, 59, 999);
+    filter.createdAt = filter.createdAt || {};
+    filter.createdAt.$lte = end;
+  }
+
+  const jobs = await db
+    .collection(COLLECTION)
+    .find(filter, {
+      projection: {
+        _id: 1,
+        status: 1,
+        totalRows: 1,
+        processedRows: 1,
+        locationFilter: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    })
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  return jobs.map((j) => ({
+    jobId: j._id,
+    status: j.status,
+    totalRows: j.totalRows,
+    processedRows: j.processedRows,
+    locationFilter: j.locationFilter ?? null,
+    createdAt: j.createdAt,
+    updatedAt: j.updatedAt,
+  }));
+}
+
+/**
+ * Obtiene un job con todas sus filas (para export).
+ */
+export async function getJobAllRows(jobId) {
+  const db = getDb();
+  if (!db) throw new Error('MongoDB no conectado');
+
+  const objectId = new ObjectId(jobId);
+  const job = await db.collection(COLLECTION).findOne(
+    { _id: objectId },
+    {
+      projection: {
+        _id: 1,
+        status: 1,
+        totalRows: 1,
+        processedRows: 1,
+        locationFilter: 1,
+        createdAt: 1,
+        rows: 1,
+      },
+    }
+  );
+
+  if (!job) throw new Error('Job no encontrado');
+
+  return {
+    jobId: job._id,
+    status: job.status,
+    totalRows: job.totalRows,
+    processedRows: job.processedRows,
+    locationFilter: job.locationFilter ?? null,
+    createdAt: job.createdAt,
+    rows: job.rows || [],
+  };
+}
+
+/**
  * Guarda la decisión del usuario sobre una fila del job.
  */
 export async function saveDecision(jobId, rowNumber, decision, selectedAssetId) {

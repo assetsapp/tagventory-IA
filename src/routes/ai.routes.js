@@ -9,6 +9,7 @@ import {
   postDecision,
   getJobsList,
   getJobExport,
+  deleteJobController,
 } from '../controllers/reconciliation.controller.js';
 import { getLocations } from '../controllers/locations.controller.js';
 import { postUploadExcel } from '../controllers/uploadFile.controller.js';
@@ -29,6 +30,7 @@ router.get('/reconciliation/job/:jobId', getJob);
 router.post('/reconciliation/job/:jobId/decision', postDecision);
 router.get('/reconciliation/jobs', getJobsList);
 router.get('/reconciliation/job/:jobId/export', getJobExport);
+router.delete('/reconciliation/job/:jobId', deleteJobController);
 
 // files
 router.post('/files/upload/excel', upload.single('file'), postUploadExcel);

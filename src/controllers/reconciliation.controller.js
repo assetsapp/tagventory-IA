@@ -9,6 +9,7 @@ import {
   saveDecision,
   listJobs,
   getJobAllRows,
+  deleteJob,
 } from '../services/reconciliation-job.service.js';
 import { buildJobReportExcel } from '../services/report-export.service.js';
 
@@ -261,6 +262,26 @@ export async function getJobExport(req, res) {
     res.status(status).json({
       status: 'error',
       message: err.message || 'Error al exportar reporte',
+    });
+  }
+}
+
+/**
+ * DELETE /ai/reconciliation/job/:jobId
+ *
+ * Elimina un job de conciliación completo.
+ */
+export async function deleteJobController(req, res) {
+  try {
+    const { jobId } = req.params;
+    await deleteJob(jobId);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[reconciliation/job:delete]', err.message);
+    const status = err.message.includes('no encontrado') ? 404 : 500;
+    res.status(status).json({
+      status: 'error',
+      message: err.message || 'Error al eliminar job',
     });
   }
 }

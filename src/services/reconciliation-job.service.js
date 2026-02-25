@@ -294,3 +294,20 @@ export async function saveDecision(jobId, rowNumber, decision, selectedAssetId) 
 
   return { success: true };
 }
+
+/**
+ * Elimina un job de conciliación completo.
+ */
+export async function deleteJob(jobId) {
+  const db = getDb();
+  if (!db) throw new Error('MongoDB no conectado');
+
+  const objectId = new ObjectId(jobId);
+  const result = await db.collection(COLLECTION).deleteOne({ _id: objectId });
+
+  if (result.deletedCount === 0) {
+    throw new Error('Job no encontrado');
+  }
+
+  return { success: true };
+}

@@ -78,13 +78,13 @@ export async function processJob(jobId) {
             index: VECTOR_INDEX,
             path: 'textEmbedding',
             queryVector: embedding,
-            numCandidates: locationMatch ? 200 : 100,
-            limit: locationMatch ? 50 : 5,
+            numCandidates: locationMatch ? 400 : 200,
+            limit: locationMatch ? 80 : 10,
           },
         },
       ];
       if (locationMatch) {
-        pipeline.push({ $match: locationMatch }, { $limit: 5 });
+        pipeline.push({ $match: locationMatch }, { $limit: 10 });
       }
       pipeline.push({
         $project: {

@@ -38,7 +38,7 @@ export async function postReconciliationSuggestions(req, res) {
     const db = getDb();
     if (!db) throw new Error('MongoDB no conectado');
 
-    const searchLimit = Math.max(1, Math.min(50, Number(limit) || 5));
+    const searchLimit = Math.max(1, Math.min(50, Number(limit) || 10));
     const locationMatch = buildLocationMatch(locationFilter);
 
     const pipeline = [

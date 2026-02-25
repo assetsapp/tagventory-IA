@@ -13,9 +13,13 @@ import {
 } from '../controllers/reconciliation.controller.js';
 import { getLocations } from '../controllers/locations.controller.js';
 import { postUploadExcel } from '../controllers/uploadFile.controller.js';
+import { authMiddleware } from '../middlewares/auth.middleware.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
+
+// Todas las rutas de /ai requieren JWT
+router.use(authMiddleware);
 
 router.post('/embedding', postEmbedding);
 router.post('/assets/backfill-sample', postBackfillSample);

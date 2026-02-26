@@ -63,6 +63,11 @@ export async function postSearchAssets(req, res) {
         },
       },
       {
+        $match: {
+          isReconciled: { $ne: true },
+        },
+      },
+      {
         $project: {
           _id: 1,
           name: 1,

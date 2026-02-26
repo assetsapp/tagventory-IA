@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb';
 import { getDb } from '../config/mongo.js';
 import { getTextEmbedding } from './embedding.service.js';
 import { normalizeText } from '../utils/embedding-text.js';
+import { buildLocationMatch } from '../utils/location-filter.js';
 
 const COLLECTION = 'reconciliation_jobs';
 const ASSETS_COLLECTION = 'assets';
@@ -10,8 +11,10 @@ const VECTOR_INDEX = 'assets_text_embedding_index';
 /**
  * Crea un job de conciliación con las filas SAP recibidas.
  * No genera embeddings aún, solo persiste el job en estado "pending".
+ * @param {Array} rows - Filas SAP
+ * @param {string} [locationFilter] - Ubicación opcional para filtrar coincidencias (padre e hijos)
  */
-export async function createJob(rows) {
+export async function createJob(rows, locationFilter = null) {
   const db = getDb();
   if (!db) throw new Error('MongoDB no conectado');
 
@@ -19,7 +22,6 @@ export async function createJob(rows) {
     rowNumber: r.rowNumber,
     sapDescription: r.sapDescription || '',
     sapLocation: r.sapLocation || '',
-    embedding: null,
     suggestions: [],
     decision: 'pending',
     selectedAssetId: null,
@@ -29,6 +31,7 @@ export async function createJob(rows) {
     status: 'pending',
     totalRows: jobRows.length,
     processedRows: 0,
+    locationFilter: locationFilter && String(locationFilter).trim() ? String(locationFilter).trim() : null,
     createdAt: new Date(),
     updatedAt: new Date(),
     rows: jobRows,
@@ -68,29 +71,42 @@ export async function processJob(jobId) {
 
       const { embedding } = await getTextEmbedding(normalizedDesc);
 
-      const suggestions = await db.collection(ASSETS_COLLECTION).aggregate([
+      const locationMatch = job.locationFilter ? buildLocationMatch(job.locationFilter) : null;
+      const pipeline = [
         {
           $vectorSearch: {
             index: VECTOR_INDEX,
             path: 'textEmbedding',
             queryVector: embedding,
-            numCandidates: 100,
-            limit: 5,
+            numCandidates: locationMatch ? 400 : 200,
+            limit: locationMatch ? 80 : 10,
           },
         },
-        {
-          $project: {
-            _id: 1,
-            name: 1,
-            brand: 1,
-            model: 1,
-            EPC: 1,
-            locationPath: 1,
-            fileExt: 1,
-            score: { $meta: 'vectorSearchScore' },
-          },
+      ];
+      const baseMatch = { isReconciled: { $ne: true } };
+      if (locationMatch) {
+        pipeline.push(
+          { $match: { $and: [locationMatch, baseMatch] } },
+          { $limit: 10 }
+        );
+      } else {
+        pipeline.push({ $match: baseMatch }, { $limit: 10 });
+      }
+      pipeline.push({
+        $project: {
+          _id: 1,
+          name: 1,
+          brand: 1,
+          model: 1,
+          EPC: 1,
+          locationPath: 1,
+          fileExt: 1,
+          isReconciled: 1,
+          score: { $meta: 'vectorSearchScore' },
         },
-      ]).toArray();
+      });
+
+      const suggestions = await db.collection(ASSETS_COLLECTION).aggregate(pipeline).toArray();
 
       const formattedSuggestions = suggestions.map((s) => ({
         assetId: s._id,
@@ -100,14 +116,15 @@ export async function processJob(jobId) {
         EPC: s.EPC || '',
         locationPath: s.locationPath || '',
         fileExt: s.fileExt || '',
+        isReconciled: Boolean(s.isReconciled),
         score: s.score,
       }));
 
+      // No guardamos el embedding (evita superar límite 16MB de MongoDB)
       await collection.updateOne(
         { _id: objectId },
         {
           $set: {
-            [`rows.${i}.embedding`]: embedding,
             [`rows.${i}.suggestions`]: formattedSuggestions,
             processedRows: processedRows + 1,
             updatedAt: new Date(),
@@ -145,6 +162,7 @@ export async function getJobResults(jobId, offset = 0, limit = 20) {
         status: 1,
         totalRows: 1,
         processedRows: 1,
+        locationFilter: 1,
         createdAt: 1,
         updatedAt: 1,
         rows: { $slice: [offset, limit] },
@@ -168,7 +186,92 @@ export async function getJobResults(jobId, offset = 0, limit = 20) {
     status: job.status,
     totalRows: job.totalRows,
     processedRows: job.processedRows,
+    locationFilter: job.locationFilter ?? null,
     rows,
+  };
+}
+
+/**
+ * Lista jobs por rango de fechas (por createdAt).
+ * @param {Date} [fromDate] - Inicio (inclusive)
+ * @param {Date} [toDate] - Fin (inclusive); se considera hasta end of day
+ */
+export async function listJobs(fromDate = null, toDate = null) {
+  const db = getDb();
+  if (!db) throw new Error('MongoDB no conectado');
+
+  const filter = {};
+  if (fromDate) {
+    filter.createdAt = filter.createdAt || {};
+    filter.createdAt.$gte = new Date(fromDate);
+  }
+  if (toDate) {
+    const end = new Date(toDate);
+    end.setHours(23, 59, 59, 999);
+    filter.createdAt = filter.createdAt || {};
+    filter.createdAt.$lte = end;
+  }
+
+  const jobs = await db
+    .collection(COLLECTION)
+    .find(filter, {
+      projection: {
+        _id: 1,
+        status: 1,
+        totalRows: 1,
+        processedRows: 1,
+        locationFilter: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    })
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  return jobs.map((j) => ({
+    jobId: j._id,
+    status: j.status,
+    totalRows: j.totalRows,
+    processedRows: j.processedRows,
+    locationFilter: j.locationFilter ?? null,
+    createdAt: j.createdAt,
+    updatedAt: j.updatedAt,
+  }));
+}
+
+/**
+ * Obtiene un job con todas sus filas (para export).
+ */
+export async function getJobAllRows(jobId) {
+  const db = getDb();
+  if (!db) throw new Error('MongoDB no conectado');
+
+  const objectId = new ObjectId(jobId);
+  const job = await db.collection(COLLECTION).findOne(
+    { _id: objectId },
+    {
+      projection: {
+        _id: 1,
+        status: 1,
+        totalRows: 1,
+        processedRows: 1,
+        locationFilter: 1,
+        createdAt: 1,
+        rows: 1,
+      },
+    }
+  );
+
+  if (!job) throw new Error('Job no encontrado');
+
+  return {
+    jobId: job._id,
+    status: job.status,
+    totalRows: job.totalRows,
+    processedRows: job.processedRows,
+    locationFilter: job.locationFilter ?? null,
+    createdAt: job.createdAt,
+    rows: job.rows || [],
   };
 }
 
@@ -182,19 +285,57 @@ export async function saveDecision(jobId, rowNumber, decision, selectedAssetId) 
   const objectId = new ObjectId(jobId);
   const collection = db.collection(COLLECTION);
 
+  const update = {
+    'rows.$.decision': decision,
+    'rows.$.selectedAssetId': selectedAssetId ? new ObjectId(selectedAssetId) : null,
+    updatedAt: new Date(),
+  };
+
+  // Si el usuario marca "no_match", limpiamos también las sugerencias de esa fila
+  // para que no vuelvan a mostrarse en vistas posteriores (conciliación/reportes).
+  if (decision === 'no_match') {
+    update['rows.$.suggestions'] = [];
+  }
+
   const result = await collection.updateOne(
     { _id: objectId, 'rows.rowNumber': rowNumber },
-    {
-      $set: {
-        'rows.$.decision': decision,
-        'rows.$.selectedAssetId': selectedAssetId ? new ObjectId(selectedAssetId) : null,
-        updatedAt: new Date(),
-      },
-    }
+    { $set: update }
   );
 
   if (result.matchedCount === 0) {
     throw new Error('Job o fila no encontrados');
+  }
+
+  // Si el usuario confirma un match, marcamos el activo como conciliado
+  if (decision === 'match' && selectedAssetId) {
+    await db.collection(ASSETS_COLLECTION).updateOne(
+      { _id: new ObjectId(selectedAssetId) },
+      {
+        $set: {
+          isReconciled: true,
+          reconciledAt: new Date(),
+          reconciledJobId: objectId,
+          reconciledRowNumber: rowNumber,
+        },
+      }
+    );
+  }
+
+  return { success: true };
+}
+
+/**
+ * Elimina un job de conciliación completo.
+ */
+export async function deleteJob(jobId) {
+  const db = getDb();
+  if (!db) throw new Error('MongoDB no conectado');
+
+  const objectId = new ObjectId(jobId);
+  const result = await db.collection(COLLECTION).deleteOne({ _id: objectId });
+
+  if (result.deletedCount === 0) {
+    throw new Error('Job no encontrado');
   }
 
   return { success: true };

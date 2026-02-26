@@ -83,8 +83,14 @@ export async function processJob(jobId) {
           },
         },
       ];
+      const baseMatch = { isReconciled: { $ne: true } };
       if (locationMatch) {
-        pipeline.push({ $match: locationMatch }, { $limit: 10 });
+        pipeline.push(
+          { $match: { $and: [locationMatch, baseMatch] } },
+          { $limit: 10 }
+        );
+      } else {
+        pipeline.push({ $match: baseMatch }, { $limit: 10 });
       }
       pipeline.push({
         $project: {
@@ -95,6 +101,7 @@ export async function processJob(jobId) {
           EPC: 1,
           locationPath: 1,
           fileExt: 1,
+          isReconciled: 1,
           score: { $meta: 'vectorSearchScore' },
         },
       });
@@ -109,6 +116,7 @@ export async function processJob(jobId) {
         EPC: s.EPC || '',
         locationPath: s.locationPath || '',
         fileExt: s.fileExt || '',
+        isReconciled: Boolean(s.isReconciled),
         score: s.score,
       }));
 
@@ -296,6 +304,21 @@ export async function saveDecision(jobId, rowNumber, decision, selectedAssetId) 
 
   if (result.matchedCount === 0) {
     throw new Error('Job o fila no encontrados');
+  }
+
+  // Si el usuario confirma un match, marcamos el activo como conciliado
+  if (decision === 'match' && selectedAssetId) {
+    await db.collection(ASSETS_COLLECTION).updateOne(
+      { _id: new ObjectId(selectedAssetId) },
+      {
+        $set: {
+          isReconciled: true,
+          reconciledAt: new Date(),
+          reconciledJobId: objectId,
+          reconciledRowNumber: rowNumber,
+        },
+      }
+    );
   }
 
   return { success: true };

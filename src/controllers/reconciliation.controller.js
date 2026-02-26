@@ -40,6 +40,7 @@ export async function postReconciliationSuggestions(req, res) {
 
     const searchLimit = Math.max(1, Math.min(50, Number(limit) || 10));
     const locationMatch = buildLocationMatch(locationFilter);
+    const baseMatch = { isReconciled: { $ne: true } };
 
     const pipeline = [
       {
@@ -53,7 +54,12 @@ export async function postReconciliationSuggestions(req, res) {
       },
     ];
     if (locationMatch) {
-      pipeline.push({ $match: locationMatch }, { $limit: searchLimit });
+      pipeline.push(
+        { $match: { $and: [locationMatch, baseMatch] } },
+        { $limit: searchLimit }
+      );
+    } else {
+      pipeline.push({ $match: baseMatch }, { $limit: searchLimit });
     }
     pipeline.push({
       $project: {
@@ -62,6 +68,7 @@ export async function postReconciliationSuggestions(req, res) {
         brand: 1,
         model: 1,
         fileExt: 1,
+        isReconciled: 1,
         score: { $meta: 'vectorSearchScore' },
       },
     });

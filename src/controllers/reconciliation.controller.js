@@ -10,6 +10,7 @@ import {
   listJobs,
   getJobAllRows,
   deleteJob,
+  autoReconcileJob,
 } from '../services/reconciliation-job.service.js';
 import { buildJobReportExcel } from '../services/report-export.service.js';
 
@@ -213,6 +214,37 @@ export async function postDecision(req, res) {
     res.status(status).json({
       status: 'error',
       message: err.message || 'Error al guardar decisión',
+    });
+  }
+}
+
+/**
+ * POST /ai/reconciliation/job/:jobId/auto-reconcile
+ *
+ * Conciliación automática de un job:
+ * - Para filas pendientes, toma la mejor sugerencia con score >= minScore (default 0.8)
+ * - No reutiliza el mismo asset en varias filas del mismo job
+ * - Respeta filas ya marcadas como match / no_match
+ */
+export async function postAutoReconcileJob(req, res) {
+  try {
+    const { jobId } = req.params;
+    const raw = Number(req.body?.minScore);
+    let minScore = Number.isFinite(raw) ? raw : 0.8;
+    if (minScore <= 0 || minScore > 1) minScore = 0.8;
+
+    const result = await autoReconcileJob(jobId, minScore);
+    res.json({
+      status: 'ok',
+      minScore,
+      ...result,
+    });
+  } catch (err) {
+    console.error('[reconciliation/job:auto-reconcile]', err.message);
+    const status = err.message.includes('no encontrado') ? 404 : 500;
+    res.status(status).json({
+      status: 'error',
+      message: err.message || 'Error en conciliación automática',
     });
   }
 }

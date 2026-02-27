@@ -276,6 +276,84 @@ export async function getJobAllRows(jobId) {
 }
 
 /**
+ * Conciliación automática de un job:
+ * - Para cada fila pendiente, toma la mejor sugerencia con score >= minScore
+ * - No reutiliza el mismo asset en varias filas del mismo job
+ * - Respeta filas ya marcadas como match / no_match
+ */
+export async function autoReconcileJob(jobId, minScore = 0.8) {
+  const db = getDb();
+  if (!db) throw new Error('MongoDB no conectado');
+
+  const objectId = new ObjectId(jobId);
+  const job = await db.collection(COLLECTION).findOne(
+    { _id: objectId },
+    {
+      projection: {
+        rows: 1,
+      },
+    }
+  );
+
+  if (!job) throw new Error('Job no encontrado');
+
+  const rows = job.rows || [];
+  const assignedIds = new Set();
+
+  // Semilla con los assets ya conciliados en este job
+  for (const row of rows) {
+    if (row.decision === 'match' && row.selectedAssetId) {
+      assignedIds.add(row.selectedAssetId.toString());
+    }
+  }
+
+  // Preparamos las filas pendientes y su mejor score, para procesar primero las más claras.
+  const pendingRowsWithScore = rows
+    .filter((row) => row && row.decision !== 'match' && row.decision !== 'no_match')
+    .map((row) => {
+      const suggestions = Array.isArray(row.suggestions) ? row.suggestions : [];
+      const bestScore = suggestions.length
+        ? Math.max(...suggestions.map((s) => Number(s.score) || 0))
+        : 0;
+      return { row, bestScore };
+    })
+    .sort((a, b) => (b.bestScore || 0) - (a.bestScore || 0));
+
+  let autoMatched = 0;
+
+  for (const { row } of pendingRowsWithScore) {
+    const suggestions = Array.isArray(row.suggestions) ? row.suggestions : [];
+    if (!suggestions.length) continue;
+
+    const sorted = [...suggestions].sort(
+      (a, b) => (Number(b.score) || 0) - (Number(a.score) || 0)
+    );
+
+    const candidate = sorted.find((s) => {
+      const assetIdStr = s.assetId?.toString?.() ?? String(s.assetId);
+      const scoreNum = Number(s.score) || 0;
+      if (!assetIdStr) return false;
+      if (scoreNum < minScore) return false;
+      if (assignedIds.has(assetIdStr)) return false;
+      if (s.isReconciled) return false;
+      return true;
+    });
+
+    if (!candidate) continue;
+
+    const assetIdStr = candidate.assetId?.toString?.() ?? String(candidate.assetId);
+    await saveDecision(jobId, row.rowNumber, 'match', assetIdStr);
+    assignedIds.add(assetIdStr);
+    autoMatched++;
+  }
+
+  return {
+    autoMatched,
+    totalRows: rows.length,
+  };
+}
+
+/**
  * Guarda la decisión del usuario sobre una fila del job.
  */
 export async function saveDecision(jobId, rowNumber, decision, selectedAssetId) {

@@ -1,6 +1,6 @@
 import { getTextEmbedding } from '../services/embedding.service.js';
 import { normalizeText } from '../utils/embedding-text.js';
-import { buildLocationMatch } from '../utils/location-filter.js';
+import { getLocationMatchFromIds } from '../utils/location-filter.js';
 import { getDb } from '../config/mongo.js';
 import {
   createJob,
@@ -20,11 +20,11 @@ import { buildJobReportExcel } from '../services/report-export.service.js';
  * MVP de conciliación con IA:
  * Compara la descripción SAP (texto libre) contra los activos de Tagventory
  * usando únicamente (name + brand + model) mediante embeddings y vector search.
- * Acepta filtro opcional por ubicación (locationFilter): solo devuelve activos en esa ubicación o hijas.
+ * Acepta filtro opcional por ubicación (locationFilterIds): ubicación + hijas y subhijas.
  */
 export async function postReconciliationSuggestions(req, res) {
   try {
-    const { sapDescription, limit, locationFilter } = req.body;
+    const { sapDescription, limit, locationFilterIds } = req.body;
 
     if (!sapDescription || typeof sapDescription !== 'string' || sapDescription.trim() === '') {
       return res.status(400).json({
@@ -40,7 +40,10 @@ export async function postReconciliationSuggestions(req, res) {
     if (!db) throw new Error('MongoDB no conectado');
 
     const searchLimit = Math.max(1, Math.min(50, Number(limit) || 10));
-    const locationMatch = buildLocationMatch(locationFilter);
+    const locationMatch =
+      Array.isArray(locationFilterIds) && locationFilterIds.length > 0
+        ? await getLocationMatchFromIds(db, locationFilterIds)
+        : null;
     const baseMatch = { isReconciled: { $ne: true } };
 
     const pipeline = [
@@ -102,7 +105,7 @@ export async function postReconciliationSuggestions(req, res) {
  */
 export async function postCreateJob(req, res) {
   try {
-    const { rows, locationFilter } = req.body;
+    const { rows, locationFilterIds } = req.body;
 
     if (!Array.isArray(rows) || rows.length === 0) {
       return res.status(400).json({
@@ -111,11 +114,11 @@ export async function postCreateJob(req, res) {
       });
     }
 
-    const filter =
-      locationFilter != null && String(locationFilter).trim() !== ''
-        ? String(locationFilter).trim()
+    const ids =
+      Array.isArray(locationFilterIds) && locationFilterIds.length > 0
+        ? locationFilterIds.map((id) => String(id)).filter(Boolean)
         : null;
-    const { jobId, totalRows } = await createJob(rows, filter);
+    const { jobId, totalRows } = await createJob(rows, ids);
     res.json({ jobId, totalRows });
   } catch (err) {
     console.error('[reconciliation/job:create]', err.message);

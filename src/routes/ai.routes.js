@@ -12,7 +12,7 @@ import {
   deleteJobController,
   postAutoReconcileJob,
 } from '../controllers/reconciliation.controller.js';
-import { getLocations } from '../controllers/locations.controller.js';
+import { getLocationsTree } from '../controllers/locations.controller.js';
 import { postUploadExcel } from '../controllers/uploadFile.controller.js';
 import { authMiddleware } from '../middlewares/auth.middleware.js';
 
@@ -25,7 +25,7 @@ router.use(authMiddleware);
 router.post('/embedding', postEmbedding);
 router.post('/assets/backfill-sample', postBackfillSample);
 router.post('/search/assets', postSearchAssets);
-router.get('/locations', getLocations);
+router.get('/locations/tree', getLocationsTree);
 
 // Conciliación
 router.post('/reconciliation/suggestions', postReconciliationSuggestions);

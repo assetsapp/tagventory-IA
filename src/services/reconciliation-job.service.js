@@ -2,7 +2,7 @@ import { ObjectId } from 'mongodb';
 import { getDb } from '../config/mongo.js';
 import { getTextEmbedding } from './embedding.service.js';
 import { normalizeText } from '../utils/embedding-text.js';
-import { buildLocationMatch } from '../utils/location-filter.js';
+import { getLocationMatchFromIds } from '../utils/location-filter.js';
 
 const COLLECTION = 'reconciliation_jobs';
 const ASSETS_COLLECTION = 'assets';
@@ -12,9 +12,9 @@ const VECTOR_INDEX = 'assets_text_embedding_index';
  * Crea un job de conciliación con las filas SAP recibidas.
  * No genera embeddings aún, solo persiste el job en estado "pending".
  * @param {Array} rows - Filas SAP
- * @param {string} [locationFilter] - Ubicación opcional para filtrar coincidencias (padre e hijos)
+ * @param {string[]} [locationFilterIds] - IDs de ubicación (ubicación + hijas y subhijas)
  */
-export async function createJob(rows, locationFilter = null) {
+export async function createJob(rows, locationFilterIds = null) {
   const db = getDb();
   if (!db) throw new Error('MongoDB no conectado');
 
@@ -27,11 +27,16 @@ export async function createJob(rows, locationFilter = null) {
     selectedAssetId: null,
   }));
 
+  const idsFilter =
+    Array.isArray(locationFilterIds) && locationFilterIds.length > 0
+      ? locationFilterIds.map((id) => String(id)).filter(Boolean)
+      : null;
+
   const doc = {
     status: 'pending',
     totalRows: jobRows.length,
     processedRows: 0,
-    locationFilter: locationFilter && String(locationFilter).trim() ? String(locationFilter).trim() : null,
+    locationFilterIds: idsFilter,
     createdAt: new Date(),
     updatedAt: new Date(),
     rows: jobRows,
@@ -71,7 +76,11 @@ export async function processJob(jobId) {
 
       const { embedding } = await getTextEmbedding(normalizedDesc);
 
-      const locationMatch = job.locationFilter ? buildLocationMatch(job.locationFilter) : null;
+      const locationMatch =
+        job.locationFilterIds && job.locationFilterIds.length > 0
+          ? await getLocationMatchFromIds(db, job.locationFilterIds)
+          : null;
+
       const pipeline = [
         {
           $vectorSearch: {
@@ -162,7 +171,7 @@ export async function getJobResults(jobId, offset = 0, limit = 20) {
         status: 1,
         totalRows: 1,
         processedRows: 1,
-        locationFilter: 1,
+        locationFilterIds: 1,
         createdAt: 1,
         updatedAt: 1,
         rows: { $slice: [offset, limit] },
@@ -186,7 +195,7 @@ export async function getJobResults(jobId, offset = 0, limit = 20) {
     status: job.status,
     totalRows: job.totalRows,
     processedRows: job.processedRows,
-    locationFilter: job.locationFilter ?? null,
+    locationFilterIds: job.locationFilterIds ?? null,
     rows,
   };
 }
@@ -220,7 +229,7 @@ export async function listJobs(fromDate = null, toDate = null) {
         status: 1,
         totalRows: 1,
         processedRows: 1,
-        locationFilter: 1,
+        locationFilterIds: 1,
         createdAt: 1,
         updatedAt: 1,
       },
@@ -233,7 +242,7 @@ export async function listJobs(fromDate = null, toDate = null) {
     status: j.status,
     totalRows: j.totalRows,
     processedRows: j.processedRows,
-    locationFilter: j.locationFilter ?? null,
+    locationFilterIds: j.locationFilterIds ?? null,
     createdAt: j.createdAt,
     updatedAt: j.updatedAt,
   }));
@@ -255,7 +264,7 @@ export async function getJobAllRows(jobId) {
         status: 1,
         totalRows: 1,
         processedRows: 1,
-        locationFilter: 1,
+        locationFilterIds: 1,
         createdAt: 1,
         rows: 1,
       },
@@ -269,9 +278,87 @@ export async function getJobAllRows(jobId) {
     status: job.status,
     totalRows: job.totalRows,
     processedRows: job.processedRows,
-    locationFilter: job.locationFilter ?? null,
+    locationFilterIds: job.locationFilterIds ?? null,
     createdAt: job.createdAt,
     rows: job.rows || [],
+  };
+}
+
+/**
+ * Conciliación automática de un job:
+ * - Para cada fila pendiente, toma la mejor sugerencia con score >= minScore
+ * - No reutiliza el mismo asset en varias filas del mismo job
+ * - Respeta filas ya marcadas como match / no_match
+ */
+export async function autoReconcileJob(jobId, minScore = 0.8) {
+  const db = getDb();
+  if (!db) throw new Error('MongoDB no conectado');
+
+  const objectId = new ObjectId(jobId);
+  const job = await db.collection(COLLECTION).findOne(
+    { _id: objectId },
+    {
+      projection: {
+        rows: 1,
+      },
+    }
+  );
+
+  if (!job) throw new Error('Job no encontrado');
+
+  const rows = job.rows || [];
+  const assignedIds = new Set();
+
+  // Semilla con los assets ya conciliados en este job
+  for (const row of rows) {
+    if (row.decision === 'match' && row.selectedAssetId) {
+      assignedIds.add(row.selectedAssetId.toString());
+    }
+  }
+
+  // Preparamos las filas pendientes y su mejor score, para procesar primero las más claras.
+  const pendingRowsWithScore = rows
+    .filter((row) => row && row.decision !== 'match' && row.decision !== 'no_match')
+    .map((row) => {
+      const suggestions = Array.isArray(row.suggestions) ? row.suggestions : [];
+      const bestScore = suggestions.length
+        ? Math.max(...suggestions.map((s) => Number(s.score) || 0))
+        : 0;
+      return { row, bestScore };
+    })
+    .sort((a, b) => (b.bestScore || 0) - (a.bestScore || 0));
+
+  let autoMatched = 0;
+
+  for (const { row } of pendingRowsWithScore) {
+    const suggestions = Array.isArray(row.suggestions) ? row.suggestions : [];
+    if (!suggestions.length) continue;
+
+    const sorted = [...suggestions].sort(
+      (a, b) => (Number(b.score) || 0) - (Number(a.score) || 0)
+    );
+
+    const candidate = sorted.find((s) => {
+      const assetIdStr = s.assetId?.toString?.() ?? String(s.assetId);
+      const scoreNum = Number(s.score) || 0;
+      if (!assetIdStr) return false;
+      if (scoreNum < minScore) return false;
+      if (assignedIds.has(assetIdStr)) return false;
+      if (s.isReconciled) return false;
+      return true;
+    });
+
+    if (!candidate) continue;
+
+    const assetIdStr = candidate.assetId?.toString?.() ?? String(candidate.assetId);
+    await saveDecision(jobId, row.rowNumber, 'match', assetIdStr);
+    assignedIds.add(assetIdStr);
+    autoMatched++;
+  }
+
+  return {
+    autoMatched,
+    totalRows: rows.length,
   };
 }
 

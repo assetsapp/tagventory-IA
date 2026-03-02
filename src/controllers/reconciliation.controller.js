@@ -1,6 +1,6 @@
 import { getTextEmbedding } from '../services/embedding.service.js';
 import { normalizeText } from '../utils/embedding-text.js';
-import { buildLocationMatch } from '../utils/location-filter.js';
+import { getLocationMatchFromIds } from '../utils/location-filter.js';
 import { getDb } from '../config/mongo.js';
 import {
   createJob,
@@ -10,6 +10,7 @@ import {
   listJobs,
   getJobAllRows,
   deleteJob,
+  autoReconcileJob,
 } from '../services/reconciliation-job.service.js';
 import { buildJobReportExcel } from '../services/report-export.service.js';
 
@@ -19,11 +20,11 @@ import { buildJobReportExcel } from '../services/report-export.service.js';
  * MVP de conciliación con IA:
  * Compara la descripción SAP (texto libre) contra los activos de Tagventory
  * usando únicamente (name + brand + model) mediante embeddings y vector search.
- * Acepta filtro opcional por ubicación (locationFilter): solo devuelve activos en esa ubicación o hijas.
+ * Acepta filtro opcional por ubicación (locationFilterIds): ubicación + hijas y subhijas.
  */
 export async function postReconciliationSuggestions(req, res) {
   try {
-    const { sapDescription, limit, locationFilter } = req.body;
+    const { sapDescription, limit, locationFilterIds } = req.body;
 
     if (!sapDescription || typeof sapDescription !== 'string' || sapDescription.trim() === '') {
       return res.status(400).json({
@@ -39,7 +40,10 @@ export async function postReconciliationSuggestions(req, res) {
     if (!db) throw new Error('MongoDB no conectado');
 
     const searchLimit = Math.max(1, Math.min(50, Number(limit) || 10));
-    const locationMatch = buildLocationMatch(locationFilter);
+    const locationMatch =
+      Array.isArray(locationFilterIds) && locationFilterIds.length > 0
+        ? await getLocationMatchFromIds(db, locationFilterIds)
+        : null;
     const baseMatch = { isReconciled: { $ne: true } };
 
     const pipeline = [
@@ -101,7 +105,7 @@ export async function postReconciliationSuggestions(req, res) {
  */
 export async function postCreateJob(req, res) {
   try {
-    const { rows, locationFilter } = req.body;
+    const { rows, locationFilterIds } = req.body;
 
     if (!Array.isArray(rows) || rows.length === 0) {
       return res.status(400).json({
@@ -110,11 +114,11 @@ export async function postCreateJob(req, res) {
       });
     }
 
-    const filter =
-      locationFilter != null && String(locationFilter).trim() !== ''
-        ? String(locationFilter).trim()
+    const ids =
+      Array.isArray(locationFilterIds) && locationFilterIds.length > 0
+        ? locationFilterIds.map((id) => String(id)).filter(Boolean)
         : null;
-    const { jobId, totalRows } = await createJob(rows, filter);
+    const { jobId, totalRows } = await createJob(rows, ids);
     res.json({ jobId, totalRows });
   } catch (err) {
     console.error('[reconciliation/job:create]', err.message);
@@ -213,6 +217,37 @@ export async function postDecision(req, res) {
     res.status(status).json({
       status: 'error',
       message: err.message || 'Error al guardar decisión',
+    });
+  }
+}
+
+/**
+ * POST /ai/reconciliation/job/:jobId/auto-reconcile
+ *
+ * Conciliación automática de un job:
+ * - Para filas pendientes, toma la mejor sugerencia con score >= minScore (default 0.8)
+ * - No reutiliza el mismo asset en varias filas del mismo job
+ * - Respeta filas ya marcadas como match / no_match
+ */
+export async function postAutoReconcileJob(req, res) {
+  try {
+    const { jobId } = req.params;
+    const raw = Number(req.body?.minScore);
+    let minScore = Number.isFinite(raw) ? raw : 0.8;
+    if (minScore <= 0 || minScore > 1) minScore = 0.8;
+
+    const result = await autoReconcileJob(jobId, minScore);
+    res.json({
+      status: 'ok',
+      minScore,
+      ...result,
+    });
+  } catch (err) {
+    console.error('[reconciliation/job:auto-reconcile]', err.message);
+    const status = err.message.includes('no encontrado') ? 404 : 500;
+    res.status(status).json({
+      status: 'error',
+      message: err.message || 'Error en conciliación automática',
     });
   }
 }

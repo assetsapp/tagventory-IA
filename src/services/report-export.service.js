@@ -33,6 +33,7 @@ function buildSheetData(job) {
     'Modelo',
     'EPC',
     'Ubicación (Tagventory)',
+    'Probabilidad %',
   ];
   const rows = [headers];
 
@@ -44,6 +45,10 @@ function buildSheetData(job) {
     const modelo = matched ? (matched.model || '') : '';
     const epc = matched ? (matched.EPC || '') : '';
     const ubicacionTag = matched ? (matched.locationPath || '') : '';
+    const probPct =
+      matched && typeof matched.score === 'number'
+        ? Math.round(Math.max(0, Math.min(1, matched.score)) * 100)
+        : '';
 
     rows.push([
       row.rowNumber,
@@ -55,6 +60,7 @@ function buildSheetData(job) {
       modelo,
       epc,
       ubicacionTag,
+      probPct,
     ]);
   }
 
@@ -80,6 +86,7 @@ export function buildJobReportExcel(job) {
     { wch: 20 },
     { wch: 22 },
     { wch: 25 },
+    { wch: 14 },
   ];
   ws['!cols'] = colWidths;
 

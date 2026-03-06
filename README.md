@@ -288,3 +288,94 @@ src/
 │   └── embedding-text.js   # buildAssetEmbeddingText, normalizeText
 └── index.js
 ```
+
+## Script de backfill de embeddings (`scripts/backfill-all.js`)
+
+Este script genera **embeddings para todos los assets que no los tengan** en la colección `assets`.  
+Es más robusto y configurable que el endpoint de muestra.
+
+### Configuración previa
+
+- Asegúrate de tener `.env` configurado:
+
+| Variable | Descripción |
+|----------|-------------|
+| `MONGO_URI` | URI de MongoDB (misma base donde están los assets) |
+| `DB_NAME` | Nombre de la base de datos (ej. `tagventory`) |
+| `OPENAI_API_KEY` | API Key de OpenAI |
+| `EMBEDDING_MODEL` | Modelo de embeddings (recomendado: `text-embedding-3-large`) |
+| `EMBEDDING_DIMENSIONS` | Dimensiones del vector (deben coincidir con el índice de MongoDB, p.ej. `1536`) |
+
+- En MongoDB Atlas, el índice vectorial sobre `textEmbedding` debe tener `numDimensions` igual a `EMBEDDING_DIMENSIONS`.
+
+### Uso básico
+
+Desde la carpeta `backend/`:
+
+```bash
+node scripts/backfill-all.js
+```
+
+El script:
+
+- Conecta a Mongo usando `MONGO_URI` y `DB_NAME`.
+- Busca assets sin `textEmbedding`.
+- Construye texto de embedding a partir de `name + brand + model`.
+- Llama a OpenAI en batches y guarda `textEmbedding`, `embeddingText`, `embeddingVersion` y `embeddingUpdatedAt`.
+
+### Opciones útiles
+
+- **Cambiar tamaño de batch** (por defecto 100):
+
+```bash
+node scripts/backfill-all.js --batch=200
+```
+
+- **Dry run** (no escribe nada en la base, solo muestra estadísticas):
+
+```bash
+node scripts/backfill-all.js --dry-run
+```
+
+### Recomendación al cambiar de modelo
+
+Si cambias `EMBEDDING_MODEL` o `EMBEDDING_DIMENSIONS`:
+
+1. Asegúrate de que el índice vectorial en MongoDB tenga el mismo `numDimensions`.
+2. Ejecuta de nuevo `scripts/backfill-all.js` para regenerar los embeddings con el nuevo modelo.
+
+---
+
+## Script de backfill por ubicación (`scripts/backfill-by-location.js`)
+
+Genera embeddings **solo para los assets de una ubicación y todas sus hijas y subhijas** (usa la colección `locationsReal` para expandir el árbol).
+
+### Uso
+
+Desde la carpeta `backend/`:
+
+```bash
+# Solo assets de EDOMEX y sus hijas/subhijas (sin embedding aún)
+node scripts/backfill-by-location.js --location=675a09bf7fecb101a9e86dd4
+
+# Con batch mayor y dry-run para ver cuántos tocaría
+node scripts/backfill-by-location.js --location=675a09bf7fecb101a9e86dd4 --batch=200 --dry-run
+
+# Regenerar también los que ya tienen embedding (--refresh)
+node scripts/backfill-by-location.js --location=675a09bf7fecb101a9e86dd4 --refresh
+```
+
+### Opciones
+
+| Opción | Descripción |
+|--------|-------------|
+| `--location=<id>` | **Requerido.** ID de la ubicación en `locationsReal` (ej. EDOMEX). |
+| `--batch=N` | Tamaño del lote (default: 100). |
+| `--dry-run` | Solo muestra estadísticas, no escribe en la base. |
+| `--refresh` | Incluye assets que ya tienen embedding (los regenera). |
+
+### Requisitos
+
+- Misma configuración que `backfill-all.js` (`.env` con `MONGO_URI`, `DB_NAME`, `OPENAI_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`).
+- Colección `locationsReal` con documentos con `_id` y `parent`.
+- Assets con campo `location` (ID de ubicación, string o ObjectId).

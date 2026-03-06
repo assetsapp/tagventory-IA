@@ -117,7 +117,10 @@ export function getSheetColumns(buffer, options = {}) {
 }
 
 function resolveDescriptionColumnIndex(headers, descriptionColumn) {
-  if (descriptionColumn == null) return findColumnIndex(headers, DESCRIPTION_KEYS);
+  if (descriptionColumn == null) {
+    const idx = findColumnIndex(headers, DESCRIPTION_KEYS);
+    return idx >= 0 ? idx : 0;
+  }
 
   const idx = Number(descriptionColumn);
   if (!Number.isNaN(idx) && idx >= 0 && idx < headers.length) return idx;

@@ -5,12 +5,13 @@ import { getLocationMatchFromIds } from '../utils/location-filter.js';
 import { hybridSearchAssets } from './hybrid-search.service.js';
 
 const COLLECTION = 'reconciliation_jobs';
+const SUGGESTIONS_COLLECTION = 'reconciliation_job_suggestions';
 const ASSETS_COLLECTION = 'assets';
 const VECTOR_INDEX = 'assets_text_embedding_index';
-// Cantidad de sugerencias por fila que se guardan en el job.
-// Debe ser suficientemente alta para que la conciliación automática
-// tenga alternativas distintas (evitar que siempre salgan los mismos 10 assets).
-const JOB_SUGGESTION_LIMIT = 50;
+// Sugerencias por fila: se guardan en colección separada (no en el documento del job)
+// para no superar el límite de 16 MB. Con 40, si hay 20 ítems iguales (ej. 20 sillas),
+// todos pueden aparecer y la auto-conciliación puede asignar uno por fila.
+const JOB_SUGGESTION_LIMIT = 40;
 
 /**
  * Crea un job de conciliación con las filas SAP recibidas.
@@ -48,6 +49,30 @@ export async function createJob(rows, locationFilterIds = null) {
 
   const result = await db.collection(COLLECTION).insertOne(doc);
   return { jobId: result.insertedId, totalRows: doc.totalRows };
+}
+
+/**
+ * Carga sugerencias desde la colección separada para un job (y opcionalmente filas concretas).
+ * @param {import('mongodb').Db} db
+ * @param {import('mongodb').ObjectId} jobId
+ * @param {number[]} [rowNumbers] - Si se pasa, solo se cargan esas filas; si no, todas del job.
+ * @returns {Promise<Map<number, Array>>} Map rowNumber -> suggestions
+ */
+async function loadSuggestionsForJob(db, jobId, rowNumbers = null) {
+  const filter = { jobId };
+  if (Array.isArray(rowNumbers) && rowNumbers.length > 0) {
+    filter.rowNumber = { $in: rowNumbers };
+  }
+  const docs = await db
+    .collection(SUGGESTIONS_COLLECTION)
+    .find(filter)
+    .project({ rowNumber: 1, suggestions: 1 })
+    .toArray();
+  const map = new Map();
+  for (const d of docs) {
+    map.set(d.rowNumber, Array.isArray(d.suggestions) ? d.suggestions : []);
+  }
+  return map;
 }
 
 /**
@@ -98,17 +123,23 @@ export async function processJob(jobId) {
         locationPath: s.locationPath || '',
         fileExt: s.fileExt || '',
         isReconciled: Boolean(s.isReconciled),
-        score: s.score,         // score híbrido
+        score: s.score,
         vectorScore: s.vectorScore ?? null,
         textScore: s.textScore ?? null,
       }));
 
-      // No guardamos el embedding (evita superar límite 16MB de MongoDB)
+      // Guardamos sugerencias en colección separada para no superar 16 MB del documento del job
+      const suggestionsColl = db.collection(SUGGESTIONS_COLLECTION);
+      await suggestionsColl.replaceOne(
+        { jobId: objectId, rowNumber: row.rowNumber },
+        { jobId: objectId, rowNumber: row.rowNumber, suggestions: formattedSuggestions },
+        { upsert: true }
+      );
+
       await collection.updateOne(
         { _id: objectId },
         {
           $set: {
-            [`rows.${i}.suggestions`]: formattedSuggestions,
             processedRows: processedRows + 1,
             updatedAt: new Date(),
           },
@@ -155,11 +186,15 @@ export async function getJobResults(jobId, offset = 0, limit = 20) {
 
   if (!job) throw new Error('Job no encontrado');
 
-  const rows = (job.rows || []).map((r) => ({
+  const jobRows = job.rows || [];
+  const rowNumbers = jobRows.map((r) => r.rowNumber);
+  const suggestionsMap = await loadSuggestionsForJob(db, objectId, rowNumbers);
+
+  const rows = jobRows.map((r) => ({
     rowNumber: r.rowNumber,
     sapDescription: r.sapDescription,
     sapLocation: r.sapLocation,
-    suggestions: r.suggestions || [],
+    suggestions: suggestionsMap.get(r.rowNumber) ?? r.suggestions ?? [],
     decision: r.decision,
     selectedAssetId: r.selectedAssetId,
   }));
@@ -247,6 +282,12 @@ export async function getJobAllRows(jobId) {
 
   if (!job) throw new Error('Job no encontrado');
 
+  const suggestionsMap = await loadSuggestionsForJob(db, objectId);
+  const rows = (job.rows || []).map((r) => ({
+    ...r,
+    suggestions: suggestionsMap.get(r.rowNumber) ?? r.suggestions ?? [],
+  }));
+
   return {
     jobId: job._id,
     status: job.status,
@@ -254,7 +295,7 @@ export async function getJobAllRows(jobId) {
     processedRows: job.processedRows,
     locationFilterIds: job.locationFilterIds ?? null,
     createdAt: job.createdAt,
-    rows: job.rows || [],
+    rows,
   };
 }
 
@@ -280,7 +321,11 @@ export async function autoReconcileJob(jobId, minScore = 0.8) {
 
   if (!job) throw new Error('Job no encontrado');
 
-  const rows = job.rows || [];
+  const suggestionsMap = await loadSuggestionsForJob(db, objectId);
+  const rows = (job.rows || []).map((r) => ({
+    ...r,
+    suggestions: suggestionsMap.get(r.rowNumber) ?? r.suggestions ?? [],
+  }));
   const assignedIds = new Set();
 
   // Semilla con los assets ya conciliados en este job
@@ -352,10 +397,13 @@ export async function saveDecision(jobId, rowNumber, decision, selectedAssetId) 
     updatedAt: new Date(),
   };
 
-  // Si el usuario marca "no_match", limpiamos también las sugerencias de esa fila
-  // para que no vuelvan a mostrarse en vistas posteriores (conciliación/reportes).
+  // Si el usuario marca "no_match", limpiamos las sugerencias de esa fila en la colección separada.
   if (decision === 'no_match') {
-    update['rows.$.suggestions'] = [];
+    await db.collection(SUGGESTIONS_COLLECTION).replaceOne(
+      { jobId: objectId, rowNumber },
+      { jobId: objectId, rowNumber, suggestions: [] },
+      { upsert: true }
+    );
   }
 
   const result = await collection.updateOne(
@@ -398,6 +446,8 @@ export async function deleteJob(jobId) {
   if (result.deletedCount === 0) {
     throw new Error('Job no encontrado');
   }
+
+  await db.collection(SUGGESTIONS_COLLECTION).deleteMany({ jobId: objectId });
 
   return { success: true };
 }

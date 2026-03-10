@@ -30,7 +30,7 @@ const minScoreArg = args.find((a) => a.startsWith('--min-score='));
 const noAuto = args.includes('--no-auto');
 
 if (!filePath || !filePath.trim()) {
-  console.error('Uso: node scripts/reconcile-excel.js "/ruta/al/archivo.xlsx" [--sheet=0] [--location=ID] [--description-column=nombre] [--min-score=0.75] [--no-auto]');
+  console.error('Uso: node scripts/reconcile-excel.js "/ruta/al/archivo.xlsx" [--sheet=0] [--location=ID] [--description-column=nombre] [--min-score=0.70] [--no-auto]');
   process.exit(1);
 }
 
@@ -43,7 +43,10 @@ if (!fs.existsSync(resolvedPath)) {
 const sheetIndex = sheetArg != null ? Number(sheetArg.split('=')[1]) : undefined;
 const locationId = locationArg ? locationArg.split('=')[1]?.trim() : null;
 const descriptionColumn = descriptionColArg ? descriptionColArg.split('=')[1]?.trim() : undefined;
-const minScore = minScoreArg != null ? Math.max(0, Math.min(1, Number(minScoreArg.split('=')[1]) || 0.75)) : 0.75;
+const DEFAULT_MIN_SCORE = 0.7; // más recall para conciliación automática por defecto
+const minScore = minScoreArg != null
+  ? Math.max(0, Math.min(1, Number(minScoreArg.split('=')[1]) || DEFAULT_MIN_SCORE))
+  : DEFAULT_MIN_SCORE;
 
 async function main() {
   // Importaciones dinámicas para que dotenv ya haya cargado

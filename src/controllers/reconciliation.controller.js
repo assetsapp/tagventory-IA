@@ -1,7 +1,7 @@
-import { getTextEmbedding } from '../services/embedding.service.js';
 import { normalizeText } from '../utils/embedding-text.js';
 import { getLocationMatchFromIds } from '../utils/location-filter.js';
 import { getDb } from '../config/mongo.js';
+import { hybridSearchAssets } from '../services/hybrid-search.service.js';
 import {
   createJob,
   processJob,
@@ -34,8 +34,6 @@ export async function postReconciliationSuggestions(req, res) {
     }
 
     const normalizedQuery = normalizeText(sapDescription);
-    const { embedding } = await getTextEmbedding(normalizedQuery);
-
     const db = getDb();
     if (!db) throw new Error('MongoDB no conectado');
 
@@ -44,40 +42,12 @@ export async function postReconciliationSuggestions(req, res) {
       Array.isArray(locationFilterIds) && locationFilterIds.length > 0
         ? await getLocationMatchFromIds(db, locationFilterIds)
         : null;
-    const baseMatch = { isReconciled: { $ne: true } };
 
-    const pipeline = [
-      {
-        $vectorSearch: {
-          index: 'assets_text_embedding_index',
-          path: 'textEmbedding',
-          queryVector: embedding,
-          numCandidates: locationMatch ? 400 : 200,
-          limit: locationMatch ? Math.min(100, searchLimit * 10) : searchLimit,
-        },
-      },
-    ];
-    if (locationMatch) {
-      pipeline.push(
-        { $match: { $and: [locationMatch, baseMatch] } },
-        { $limit: searchLimit }
-      );
-    } else {
-      pipeline.push({ $match: baseMatch }, { $limit: searchLimit });
-    }
-    pipeline.push({
-      $project: {
-        _id: 1,
-        name: 1,
-        brand: 1,
-        model: 1,
-        fileExt: 1,
-        isReconciled: 1,
-        score: { $meta: 'vectorSearchScore' },
-      },
+    const results = await hybridSearchAssets({
+      query: normalizedQuery,
+      locationMatch,
+      limit: searchLimit,
     });
-
-    const results = await db.collection('assets').aggregate(pipeline).toArray();
 
     res.json({
       query: normalizedQuery,

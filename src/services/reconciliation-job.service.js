@@ -1,12 +1,16 @@
 import { ObjectId } from 'mongodb';
 import { getDb } from '../config/mongo.js';
-import { getTextEmbedding } from './embedding.service.js';
 import { normalizeText } from '../utils/embedding-text.js';
 import { getLocationMatchFromIds } from '../utils/location-filter.js';
+import { hybridSearchAssets } from './hybrid-search.service.js';
 
 const COLLECTION = 'reconciliation_jobs';
 const ASSETS_COLLECTION = 'assets';
 const VECTOR_INDEX = 'assets_text_embedding_index';
+// Cantidad de sugerencias por fila que se guardan en el job.
+// Debe ser suficientemente alta para que la conciliación automática
+// tenga alternativas distintas (evitar que siempre salgan los mismos 10 assets).
+const JOB_SUGGESTION_LIMIT = 50;
 
 /**
  * Crea un job de conciliación con las filas SAP recibidas.
@@ -47,7 +51,7 @@ export async function createJob(rows, locationFilterIds = null) {
 }
 
 /**
- * Procesa un job: genera embeddings y ejecuta vector search fila por fila (en serie).
+ * Procesa un job: genera embeddings y ejecuta búsqueda híbrida fila por fila (en serie).
  */
 export async function processJob(jobId) {
   const db = getDb();
@@ -74,48 +78,16 @@ export async function processJob(jobId) {
       const normalizedDesc = normalizeText(row.sapDescription);
       if (!normalizedDesc) continue;
 
-      const { embedding } = await getTextEmbedding(normalizedDesc);
-
       const locationMatch =
         job.locationFilterIds && job.locationFilterIds.length > 0
           ? await getLocationMatchFromIds(db, job.locationFilterIds)
           : null;
 
-      const pipeline = [
-        {
-          $vectorSearch: {
-            index: VECTOR_INDEX,
-            path: 'textEmbedding',
-            queryVector: embedding,
-            numCandidates: locationMatch ? 400 : 200,
-            limit: locationMatch ? 80 : 10,
-          },
-        },
-      ];
-      const baseMatch = { isReconciled: { $ne: true } };
-      if (locationMatch) {
-        pipeline.push(
-          { $match: { $and: [locationMatch, baseMatch] } },
-          { $limit: 10 }
-        );
-      } else {
-        pipeline.push({ $match: baseMatch }, { $limit: 10 });
-      }
-      pipeline.push({
-        $project: {
-          _id: 1,
-          name: 1,
-          brand: 1,
-          model: 1,
-          EPC: 1,
-          locationPath: 1,
-          fileExt: 1,
-          isReconciled: 1,
-          score: { $meta: 'vectorSearchScore' },
-        },
+      const suggestions = await hybridSearchAssets({
+        query: normalizedDesc,
+        locationMatch,
+        limit: JOB_SUGGESTION_LIMIT,
       });
-
-      const suggestions = await db.collection(ASSETS_COLLECTION).aggregate(pipeline).toArray();
 
       const formattedSuggestions = suggestions.map((s) => ({
         assetId: s._id,
@@ -126,7 +98,9 @@ export async function processJob(jobId) {
         locationPath: s.locationPath || '',
         fileExt: s.fileExt || '',
         isReconciled: Boolean(s.isReconciled),
-        score: s.score,
+        score: s.score,         // score híbrido
+        vectorScore: s.vectorScore ?? null,
+        textScore: s.textScore ?? null,
       }));
 
       // No guardamos el embedding (evita superar límite 16MB de MongoDB)
